@@ -1,0 +1,30 @@
+{
+  "segment_files": [
+    "outputs/20251122_131522/segments/000_Sarah.mp3",
+    "outputs/20251122_131522/segments/001_Dennis.mp3",
+    "outputs/20251122_131522/segments/002_Sarah.mp3",
+    "outputs/20251122_131522/segments/003_Dennis.mp3",
+    "outputs/20251122_131522/segments/004_Sarah.mp3",
+    "outputs/20251122_131522/segments/005_Dennis.mp3",
+    "outputs/20251122_131522/segments/006_Sarah.mp3",
+    "outputs/20251122_131522/segments/007_Dennis.mp3",
+    "outputs/20251122_131522/segments/008_Sarah.mp3",
+    "outputs/20251122_131522/segments/009_Dennis.mp3",
+    "outputs/20251122_131522/segments/010_Sarah.mp3",
+    "outputs/20251122_131522/segments/011_Dennis.mp3",
+    "outputs/20251122_131522/segments/012_Sarah.mp3",
+    "outputs/20251122_131522/segments/013_Dennis.mp3",
+    "outputs/20251122_131522/segments/014_Sarah.mp3",
+    "outputs/20251122_131522/segments/015_Dennis.mp3",
+    "outputs/20251122_131522/segments/016_Sarah.mp3",
+    "outputs/20251122_131522/segments/017_Dennis.mp3",
+    "outputs/20251122_131522/segments/018_Sarah.mp3",
+    "outputs/20251122_131522/segments/019_Dennis.mp3",
+    "outputs/20251122_131522/segments/020_Sarah.mp3",
+    "outputs/20251122_131522/segments/021_Dennis.mp3",
+    "outputs/20251122_131522/segments/022_Sarah.mp3",
+    "outputs/20251122_131522/segments/023_Dennis.mp3",
+    "outputs/20251122_131522/segments/024_Sarah.mp3"
+  ],
+  "final_podcast": "outputs/20251122_131522/podcast/podcast_final.mp3"
+}
