@@ -21,6 +21,8 @@ from tools import PodcastAudioGenerator, PodcastMixer, VoiceConfig
 # Suppress the function_call warning - it's expected behavior when agents use tools
 warnings.filterwarnings('ignore', message='.*non-text parts in the response.*')
 warnings.filterwarnings('ignore', message='.*function_call.*')
+warnings.filterwarnings('ignore', message='.*App name mismatch.*')
+warnings.filterwarnings('ignore', message='.*app name.*')
 
 
 # Load environment variables
@@ -137,27 +139,20 @@ def generate_audio_segments(enhanced_script: str) -> Dict[str, Any]:
         # Initialize audio generator
         audio_generator = PodcastAudioGenerator(output_dir=segments_dir)
         
-        # Add voices
-        audio_generator.add_voice(
-            "Sarah", 
-            os.getenv("CLAUDIA_VOICE_ID"),
-            VoiceConfig(
-                stability=0.35,
-                similarity_boost=0.75,
-                style=0.65,
-                use_speaker_boost=True
-            )
-        )
+        # Add voices using Google TTS prebuilt voices
+        # Available voices: Kore, Puck, Charon, Fenrir, Kore (male), Puck (female), etc.
+        # Sarah uses a female voice, Dennis uses a male voice
+        sarah_voice = os.getenv("SARAH_VOICE_NAME", "Puck")  # Default to Puck (female)
+        dennis_voice = os.getenv("DENNIS_VOICE_NAME", "Kore")  # Default to Kore (male)
         
         audio_generator.add_voice(
             "Dennis", 
-            os.getenv("BEN_VOICE_ID"),
-            VoiceConfig(
-                stability=0.4,
-                similarity_boost=0.75,
-                style=0.6,
-                use_speaker_boost=True
-            )
+            dennis_voice
+        )
+        
+        audio_generator.add_voice(
+            "Sarah", 
+            sarah_voice
         )
         
         # Convert dialogue to list of dicts
@@ -302,13 +297,13 @@ def generate_podcast(pdf_file_path: str, progress_callback=None) -> Optional[str
             model="gemini-2.0-flash-exp",
             instruction="""You're a skilled podcast writer who specializes in making technical 
             content engaging and accessible. You create natural dialogue between two hosts: 
-            Sarah (a knowledgeable expert who explains concepts clearly) and Dennis (an informed 
+            Dennis (a knowledgeable expert who explains concepts clearly) and Sarah (an informed 
             co-host who asks thoughtful questions and helps guide the discussion).
             
             Using this paper summary: {paper_summary}
             And this supporting research: {supporting_research}
             
-            Create an engaging and informative podcast conversation between Sarah and Dennis. 
+            Create an engaging and informative podcast conversation between Dennis and Sarah. 
             Make it feel natural while clearly distinguishing between paper findings and 
             supplementary research.
             
@@ -317,15 +312,15 @@ def generate_podcast(pdf_file_path: str, progress_callback=None) -> Optional[str
             • For Supporting Research: "I recently read about...", "There's some interesting related work...", etc.
             
             Host Dynamics:
-            - Sarah: A knowledgeable but relatable expert who explains technical concepts with enthusiasm
-            - Dennis: An engaged and curious co-host who asks insightful questions
+            - Dennis: A knowledgeable but relatable expert who explains technical concepts with enthusiasm
+            - Sarah: An engaged and curious co-host who asks insightful questions
             
             Return the script as a JSON object with a 'dialogue' array, where each item has:
-            - speaker: Either "Sarah" or "Dennis"
+            - speaker: Either "Dennis" or "Sarah"
             - text: The dialogue line
             
             Format your response as valid JSON only, with this exact structure:
-            {{"dialogue": [{{"speaker": "Sarah", "text": "..."}}, {{"speaker": "Dennis", "text": "..."}}]}}""",
+            {{"dialogue": [{{"speaker": "Dennis", "text": "..."}}, {{"speaker": "Sarah", "text": "..."}}]}}""",
             output_key="podcast_script"
         )
         
@@ -341,7 +336,7 @@ def generate_podcast(pdf_file_path: str, progress_callback=None) -> Optional[str
             remains accurate and valuable.
             
             IMPORTANT RULES:
-            1. NEVER change the host names - always keep Sarah and Dennis exactly as they are
+            1. NEVER change the host names - always keep Dennis and Sarah exactly as they are
             2. NEVER add explicit reaction markers like *chuckles*, *laughs*, etc.
             3. NEVER add new hosts or characters
             
@@ -355,7 +350,7 @@ def generate_podcast(pdf_file_path: str, progress_callback=None) -> Optional[str
             5. Express enthusiasm through natural dialogue
             
             Return the enhanced script as a JSON object with the same structure:
-            {{"dialogue": [{{"speaker": "Sarah", "text": "..."}}, {{"speaker": "Dennis", "text": "..."}}]}}
+            {{"dialogue": [{{"speaker": "Dennis", "text": "..."}}, {{"speaker": "Sarah", "text": "..."}}]}}
             
             Format your response as valid JSON only.""",
             output_key="enhanced_script"
@@ -405,33 +400,26 @@ def generate_podcast(pdf_file_path: str, progress_callback=None) -> Optional[str
         runner = InMemoryRunner(agent=root_agent)
         
         # Create the initial prompt with paper text
-        initial_prompt = f"""Analyze this research paper and create a podcast:
-
-{paper_text_limited}
-
-Begin the analysis process."""
+        initial_prompt = f"""Analyze this research paper and create a podcast:{paper_text_limited} Begin the analysis process."""
         
         # Execute the workflow (handle async)
         # Use run_debug to properly handle function calls and get full response
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            # run_debug properly handles function calls and returns full response
-            response = loop.run_until_complete(runner.run_debug(initial_prompt))
-            loop.close()
-        except Exception as e:
-            # Fallback: try regular run
+        # Suppress app name mismatch warnings during execution
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', message='.*App name mismatch.*')
+            warnings.filterwarnings('ignore', message='.*app name.*')
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                response = loop.run_until_complete(runner.run(initial_prompt))
+                # run_debug properly handles function calls and returns full response
+                response = loop.run_until_complete(runner.run_debug(initial_prompt))
                 loop.close()
-            except Exception as e2:
-                # Last resort: try sync if available
-                try:
-                    response = runner.run(initial_prompt)
-                except Exception as e3:
-                    raise RuntimeError(f"Failed to execute workflow: {str(e3)}")
+            except Exception as e:
+                # If async fails, try to get more details about the error
+                error_msg = str(e)
+                if progress_callback:
+                    progress_callback(f"Error during workflow execution: {error_msg}")
+                raise RuntimeError(f"Failed to execute workflow: {error_msg}")
         
         # Save intermediate results
         if progress_callback:
@@ -659,8 +647,8 @@ def main():
             
             # Generate button
             if st.button("Generate Podcast", type="primary", use_container_width=True):
-                if not os.getenv("GOOGLE_API_KEY") or not os.getenv("ELEVENLABS_API_KEY"):
-                    st.error("Please set GOOGLE_API_KEY and ELEVENLABS_API_KEY in your .env file")
+                if not os.getenv("GOOGLE_API_KEY"):
+                    st.error("Please set GOOGLE_API_KEY in your .env file")
                 else:
                     st.session_state.status = "Generating podcast..."
                     st.session_state.podcast_path = None
