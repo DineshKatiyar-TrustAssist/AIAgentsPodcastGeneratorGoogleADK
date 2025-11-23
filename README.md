@@ -1,6 +1,6 @@
 # AI Agents Podcast Generator
 
-An AI-powered system that automatically converts research papers into engaging podcast conversations using Google ADK (Agent Development Kit) agents, ElevenLabs text-to-speech, and intelligent script generation.
+An AI-powered system that automatically converts research papers into engaging podcast conversations using Google ADK (Agent Development Kit) multi-agent system, Google TTS (Text-to-Speech), and intelligent script generation.
 
 ## Overview
 
@@ -16,19 +16,36 @@ This project uses Google ADK to transform academic research papers into natural,
 - **🔍 Supporting Research Integration**: Finds and incorporates relevant supplementary materials and real-world context
 - **💬 Natural Dialogue Generation**: Creates engaging conversations between two hosts (Sarah and Dennis)
 - **✨ Script Enhancement**: Improves scripts with natural humor, analogies, and engaging banter
-- **🎙️ High-Quality Audio Generation**: Uses ElevenLabs API for natural-sounding voice synthesis
+- **🎙️ High-Quality Audio Generation**: Uses Google TTS (gemini-2.5-flash-preview-tts) for natural-sounding voice synthesis
 - **🎵 Professional Audio Mixing**: Combines audio segments with proper normalization and transitions
 - **📁 Organized Output Structure**: Automatically organizes outputs into timestamped directories
 
 ## Architecture
 
-The system uses Google ADK with a sequential workflow of four specialized agents:
+The system uses Google ADK with a **SequentialAgent** workflow that orchestrates five specialized agents in order:
 
 1. **Research Analyst Agent**: Analyzes research papers and creates comprehensive summaries using Gemini models
-2. **Research Support Agent**: Finds supplementary materials and real-world context using Google Search
+   - Model: `gemini-2.0-flash-exp`
+   - Output: Structured JSON summary with findings, methodology, implications, etc.
+   
+2. **Research Support Agent**: Finds supplementary materials and real-world context using knowledge base
+   - Model: `gemini-2.0-flash-exp`
+   - Output: Supporting research materials and context
+   
 3. **Script Writer Agent**: Creates initial podcast scripts with natural dialogue
+   - Model: `gemini-2.0-flash-exp`
+   - Output: JSON script with dialogue between Sarah and Dennis
+   
 4. **Script Enhancer Agent**: Improves scripts for engagement and entertainment
-5. **Audio Tools**: Generate and mix final podcast audio (not an agent, but tools used in the workflow)
+   - Model: `gemini-2.0-flash-exp`
+   - Output: Enhanced JSON script with natural reactions and flow
+   
+5. **Audio Generator Agent**: Generates audio segments using Google TTS via FunctionTool
+   - Model: `gemini-2.0-flash-exp`
+   - Tools: `FunctionTool(generate_audio_segments)`
+   - Output: Audio generation result with final podcast path
+
+**Workflow Pattern**: Sequential - Each agent runs in order, with outputs passed to the next agent via `{output_key}` placeholders in instructions.
 
 ## Installation
 
@@ -36,9 +53,7 @@ The system uses Google ADK with a sequential workflow of four specialized agents
 
 - Python 3.10 or higher
 - API keys for:
-  - Google API Key (for Gemini models via Google ADK)
-  - ElevenLabs (for text-to-speech)
-  - Voice IDs from ElevenLabs for the two hosts
+  - Google API Key (for Gemini models and TTS via Google ADK)
 
 ### Setup
 
@@ -56,15 +71,19 @@ pip install -r requirements.txt
 3. Create a `.env` file in the project root with your API keys:
 ```env
 GOOGLE_API_KEY=your_google_api_key
-ELEVENLABS_API_KEY=your_elevenlabs_api_key
-BEN_VOICE_ID=your_ben_voice_id
-CLAUDIA_VOICE_ID=your_claudia_voice_id
+SARAH_VOICE_NAME=Puck
+DENNIS_VOICE_NAME=Kore
 ```
 
 **Getting API Keys:**
 - **Google API Key**: Get your API key from [Google AI Studio](https://makersuite.google.com/app/apikey) or [Google Cloud Console](https://console.cloud.google.com/)
-- **ElevenLabs API Key**: Sign up at [ElevenLabs](https://elevenlabs.io/) and get your API key from the dashboard
-- **Voice IDs**: Create or select voices in your ElevenLabs account and use their voice IDs
+- The API key is used for both Gemini models (for agents) and Google TTS (for audio generation)
+
+**Voice Configuration (Optional):**
+- **SARAH_VOICE_NAME**: Google TTS prebuilt voice name for Sarah (default: "Puck" - female voice)
+- **DENNIS_VOICE_NAME**: Google TTS prebuilt voice name for Dennis (default: "Kore" - male voice)
+- Available voices include: Kore, Puck, Charon, Fenrir, and others
+- If not specified, defaults to Puck for Sarah and Kore for Dennis
 
 ## Usage
 
@@ -108,10 +127,15 @@ python app.py your_paper.pdf
 ```
 
 The system will:
-- Automatically copy the PDF to the `knowledge/` directory
+- Extract text directly from the PDF using PyPDF2
 - Create a timestamped output directory
-- Generate paper summary, supporting research, and scripts
-- Produce individual audio segments for each dialogue line
+- Run the multi-agent workflow sequentially:
+  1. Research Analyst creates paper summary
+  2. Research Support finds supplementary materials
+  3. Script Writer creates initial podcast script
+  4. Script Enhancer improves the script
+  5. Audio Generator calls FunctionTool to generate audio
+- Produce individual audio segments for each dialogue line using Google TTS
 - Mix all segments into a final podcast file
 
 ## Streamlit UI Features
@@ -154,26 +178,28 @@ outputs/YYYYMMDD_HHMMSS/
 
 Additionally:
 - Uploaded PDFs are temporarily stored in `uploads/` directory
-- PDFs are automatically copied to `knowledge/` directory for processing
+- PDF text is extracted directly from uploaded files (no knowledge directory needed)
 - Generated podcasts can be accessed via the web UI or file system
 
 ## Key Components
 
 ### Agents
 
-- **Researcher**: PhD-level analyst specializing in breaking down complex papers
-- **Research Support**: Finds current context and supporting materials
+- **Research Analyst**: PhD-level analyst specializing in breaking down complex papers
+- **Research Support**: Finds current context and supporting materials using knowledge base
 - **Script Writer**: Creates engaging technical podcast scripts
 - **Script Enhancer**: Adds entertainment value while maintaining accuracy
-- **Audio Generator**: Handles voice synthesis and audio production
+- **Audio Generator**: Generates audio using Google TTS via FunctionTool integration
 
 ### Tools
 
 #### PodcastAudioGenerator
-- Synthesizes speech using ElevenLabs API
-- Supports multiple voice configurations
+- Synthesizes speech using Google TTS (gemini-2.5-flash-preview-tts model)
+- Uses single-speaker TTS per segment with correct voice assignment
+- Supports Google TTS prebuilt voices (Kore, Puck, Charon, Fenrir, etc.)
 - Applies audio normalization and quality enhancements
 - Generates individual audio segments for each dialogue line
+- Converts PCM audio from Google TTS to MP3 format
 
 #### PodcastMixer
 - Combines audio segments into final podcast
@@ -183,15 +209,21 @@ Additionally:
 
 ### Voice Configuration
 
-The system supports configurable voice settings:
-- **Stability**: Controls voice variation (0.0-1.0)
-- **Similarity Boost**: Maintains voice consistency (0.0-1.0)
-- **Style**: Expressiveness level (0.0-1.0)
-- **Speaker Boost**: Enhances voice clarity
+The system uses Google TTS prebuilt voices:
+- **Voice Names**: Configurable via environment variables
+- **Default Voices**:
+  - **Sarah**: Puck (female voice) - Enthusiastic expert
+  - **Dennis**: Kore (male voice) - Engaged and curious co-host
 
-Default hosts:
-- **Sarah**: Enthusiastic expert (uses CLAUDIA_VOICE_ID)
-- **Dennis**: Engaged and curious co-host (uses BEN_VOICE_ID)
+**Available Google TTS Voices:**
+- Kore (male)
+- Puck (female)
+- Charon (male)
+- Fenrir (male)
+- And others - check Google TTS documentation for full list
+
+**Customization:**
+Set `SARAH_VOICE_NAME` and `DENNIS_VOICE_NAME` in your `.env` file to use different voices.
 
 ## Configuration
 
@@ -207,17 +239,18 @@ The system uses Google Gemini models via Google ADK:
 
 Default audio configuration:
 - Format: MP3
-- Sample Rate: 48kHz
+- Sample Rate: 24kHz (Google TTS default), upsampled to 48kHz for final output
 - Bitrate: 256k
 - Normalization: Enabled
 - Target Loudness: -14.0 LUFS
+- Google TTS Model: gemini-2.5-flash-preview-tts
 
 ## Dependencies
 
 - `google-adk`: Google Agent Development Kit for building AI agents
-- `google-generativeai`: Google Generative AI SDK for Gemini models
-- `elevenlabs`: Text-to-speech API client
-- `pydub`: Audio processing library
+- `google-genai`: Google Generative AI SDK for Gemini models and TTS
+- `google-generativeai`: Google Generative AI SDK (legacy support)
+- `pydub`: Audio processing library for audio processing and conversion
 - `pydantic`: Data validation
 - `python-dotenv`: Environment variable management
 - `streamlit`: Web UI framework
@@ -264,8 +297,11 @@ AIAgentsPodcastGenerator/
 - Preserves accuracy while improving entertainment value
 
 ### Audio Production
-- Generates natural-sounding voices with proper intonation
-- Applies professional audio processing
+- Audio Generator Agent uses FunctionTool to call audio generation function
+- Generates natural-sounding voices using Google TTS with proper intonation
+- Uses single-speaker TTS per segment with correct voice assignment (Sarah → Puck, Dennis → Kore)
+- Applies professional audio processing and normalization
+- Converts PCM audio from Google TTS to MP3 format
 - Creates smooth transitions between speakers
 - Ensures consistent audio quality throughout
 
@@ -274,30 +310,32 @@ AIAgentsPodcastGenerator/
 1. **PDF Upload**: User uploads a research paper PDF via Streamlit UI
 2. **Text Extraction**: PDF text is extracted using PyPDF2
 3. **Research Analysis**: Research Analyst agent (Google ADK) extracts key information using Gemini
-4. **Supporting Research**: Research Support agent finds relevant context using Google Search
+4. **Supporting Research**: Research Support agent finds relevant context using knowledge base
 5. **Script Creation**: Script Writer agent creates initial podcast script
 6. **Script Enhancement**: Script Enhancer agent improves engagement and flow
-7. **Audio Generation**: Audio tools create voice segments for each dialogue line using ElevenLabs
+7. **Audio Generation**: Audio Generator agent calls FunctionTool to generate voice segments for each dialogue line using Google TTS
 8. **Audio Mixing**: PodcastMixer combines segments into final podcast
 9. **Output**: Podcast is available in the UI for playback and download
 
 ## Notes
 
-- The system requires valid API keys for Google ADK (Gemini) and ElevenLabs
-- Voice IDs must be obtained from ElevenLabs
-- PDF files are automatically processed - text is extracted directly from uploaded files
+- The system requires a valid Google API Key for both Gemini models (agents) and Google TTS (audio)
+- Voice names are Google TTS prebuilt voices (no separate voice creation needed)
+- PDF files are automatically processed - text is extracted directly from uploaded files using PyPDF2
 - Output directories are automatically created with timestamps
 - All intermediate data is saved as JSON for review and debugging
 - The Streamlit UI provides real-time progress updates during generation
 - Generated podcasts are stored in timestamped directories for easy organization
-- Google ADK agents use Gemini models which provide high-quality responses
-- The system uses Google Search tool for finding supporting research materials
+- Google ADK agents use Gemini models (gemini-2.0-flash-exp) which provide high-quality responses
+- The system uses a multi-agent sequential workflow with 5 specialized agents
+- Audio generation uses Google TTS via FunctionTool integration with the AudioGenerator agent
+- The system uses InMemoryRunner with run_debug() for proper async execution and function call handling
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **API Key Errors**: Ensure `GOOGLE_API_KEY` and `ELEVENLABS_API_KEY` are set in your `.env` file
+1. **API Key Errors**: Ensure `GOOGLE_API_KEY` is set in your `.env` file
 2. **PDF Processing Errors**: Ensure the PDF is not corrupted and contains extractable text
 3. **Generation Fails**: Check the console/logs for detailed error messages. Verify Google API quota limits
 4. **Audio Player Not Showing**: Verify that the podcast file was successfully generated in `outputs/`
@@ -307,7 +345,8 @@ AIAgentsPodcastGenerator/
 
 - Check that all dependencies are installed: `pip install -r requirements.txt`
 - Verify API keys are correctly set in `.env` file (especially `GOOGLE_API_KEY`)
-- Ensure you have sufficient API quotas for Google Gemini and ElevenLabs
+- Ensure you have sufficient API quotas for Google Gemini and Google TTS
+- Check that your Google API key has access to both Gemini models and TTS features
 - Check Google ADK documentation: https://google.github.io/adk-docs/
 - Verify your Google API key has access to Gemini models
 
