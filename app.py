@@ -2,25 +2,34 @@
 AI Agents Podcast Generator using Google ADK.
 Converts research papers into engaging podcast conversations.
 """
-from google.generativeai import configure, GenerativeModel
+from google.adk.agents import Agent, SequentialAgent
+from google.adk.runners import InMemoryRunner
+from google.adk.tools import FunctionTool
 import PyPDF2
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from dotenv import load_dotenv
 import os
 import json
 import shutil
+import asyncio
+import warnings
 import streamlit as st
 from tools import PodcastAudioGenerator, PodcastMixer, VoiceConfig
+
+# Suppress the function_call warning - it's expected behavior when agents use tools
+warnings.filterwarnings('ignore', message='.*non-text parts in the response.*')
+warnings.filterwarnings('ignore', message='.*function_call.*')
 
 
 # Load environment variables
 load_dotenv()
 
-# Configure Google Generative AI
+# Set Google API key for ADK
 if os.getenv("GOOGLE_API_KEY"):
-    configure(api_key=os.getenv("GOOGLE_API_KEY"))
+    os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
+    os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "FALSE"
 
 
 def setup_directories():
@@ -85,126 +94,115 @@ class PodcastScript(BaseModel):
     dialogue: List[DialogueLine] = Field(..., description="Ordered list of dialogue lines")
 
 
-class AudioGeneration(BaseModel):
-    """Audio generation result with metadata."""
-    segment_files: List[str] = Field(..., description="List of generated audio segment files")
-    final_podcast: str = Field(..., description="Path to the final mixed podcast file")
+# Global variables for audio generation context
+_audio_context = {}
 
 
-# --- Agent Helper Functions ---
-def get_research_analyst_model():
-    """Get the research analyst model with instructions."""
-    model = GenerativeModel(
-        model_name='gemini-2.0-flash-exp',
-        system_instruction="""You're a PhD researcher with a talent for breaking down complex
-        academic papers into clear, understandable summaries. You excel at identifying
-        key findings and their real-world implications. When analyzing a research paper,
-        create a comprehensive summary that includes:
-        1. Main findings and conclusions
-        2. Methodology overview
-        3. Key implications for the field
-        4. Limitations of the study
-        5. Suggested future research directions
+def generate_audio_segments(enhanced_script: str) -> Dict[str, Any]:
+    """
+    Generate audio segments from podcast script.
+    This function is called by the AudioGenerator agent via FunctionTool.
+    
+    Args:
+        enhanced_script: The enhanced podcast script (JSON string or text containing JSON)
         
-        Make the summary accessible to an educated general audience while maintaining accuracy.
-        Return your analysis as a structured JSON with the following fields:
-        - title: Title of the research paper
-        - main_findings: List of key findings
-        - methodology: Research methodology description
-        - key_implications: List of implications
-        - limitations: List of limitations
-        - future_work: List of future research directions
-        - summary_date: Current date in ISO format"""
-    )
-    return model
-
-
-def get_research_support_model():
-    """Get the research support model with instructions."""
-    model = GenerativeModel(
-        model_name='gemini-2.0-flash-exp',
-        system_instruction="""You're a versatile research assistant who excels at finding 
-        supplementary information across academic fields. You have a talent for 
-        connecting academic research with real-world applications, current events, 
-        and practical examples, regardless of the field. You know how to find 
-        credible sources and relevant discussions across various domains.
+    Returns:
+        Dictionary with status, final_podcast path, and segment files
+    """
+    global _audio_context
+    try:
+        # Parse script - handle both JSON string and text
+        script_data = None
+        if isinstance(enhanced_script, str):
+            # Try to extract JSON if wrapped in text
+            if enhanced_script.strip().startswith('{'):
+                script_data = json.loads(enhanced_script)
+            else:
+                # Try to find JSON in text
+                import re
+                json_match = re.search(r'\{.*\}', enhanced_script, re.DOTALL)
+                if json_match:
+                    script_data = json.loads(json_match.group())
+                else:
+                    raise ValueError("Could not find valid JSON in script")
+        else:
+            script_data = enhanced_script
         
-        After analyzing a paper summary, find recent and relevant supporting 
-        materials that add context and real-world perspective to the topic.
+        if not script_data or 'dialogue' not in script_data:
+            raise ValueError("Invalid script format: missing 'dialogue' key")
         
-        Focus on:
-        1. Recent developments in the field (within last 2 years)
-        2. Practical applications and case studies
-        3. Industry reports and expert opinions
-        4. Different perspectives and alternative approaches
-        5. Real-world impact and adoption
+        segments_dir = _audio_context.get('segments_dir', 'outputs/segments')
+        final_dir = _audio_context.get('final_dir', 'outputs/podcast')
         
-        Based on your knowledge and the paper summary, provide a structured
-        collection of relevant supporting materials, examples, and context
-        that would enhance understanding of the research topic."""
-    )
-    return model
-
-
-def get_script_writer_model():
-    """Get the script writer model with instructions."""
-    model = GenerativeModel(
-        model_name='gemini-2.0-flash-exp',
-        system_instruction="""You're a skilled podcast writer who specializes in making technical 
-        content engaging and accessible. You create natural dialogue between two hosts: 
-        Sarah (a knowledgeable expert who explains concepts clearly) and Dennis (an informed 
-        co-host who asks thoughtful questions and helps guide the discussion).
+        # Initialize audio generator
+        audio_generator = PodcastAudioGenerator(output_dir=segments_dir)
         
-        Using the paper summary and supporting research, create an engaging and informative 
-        podcast conversation between Sarah and Dennis. Make it feel natural while clearly 
-        distinguishing between paper findings and supplementary research.
+        # Add voices
+        audio_generator.add_voice(
+            "Sarah", 
+            os.getenv("CLAUDIA_VOICE_ID"),
+            VoiceConfig(
+                stability=0.35,
+                similarity_boost=0.75,
+                style=0.65,
+                use_speaker_boost=True
+            )
+        )
         
-        Source Attribution Guidelines:
-        • For Paper Content: "According to the paper...", "The researchers found that...", etc.
-        • For Supporting Research: "I recently read about...", "There's some interesting related work...", etc.
+        audio_generator.add_voice(
+            "Dennis", 
+            os.getenv("BEN_VOICE_ID"),
+            VoiceConfig(
+                stability=0.4,
+                similarity_boost=0.75,
+                style=0.6,
+                use_speaker_boost=True
+            )
+        )
         
-        Host Dynamics:
-        - Sarah: A knowledgeable but relatable expert who explains technical concepts with enthusiasm
-        - Dennis: An engaged and curious co-host who asks insightful questions
+        # Convert dialogue to list of dicts
+        dialogue_list = []
+        for line in script_data.get('dialogue', []):
+            if isinstance(line, dict):
+                speaker = line.get('speaker', '').strip()
+                text = line.get('text', '').strip()
+                if speaker and text:
+                    dialogue_list.append({
+                        'speaker': speaker,
+                        'text': text
+                    })
         
-        Return the script as a JSON with a 'dialogue' array, where each item has:
-        - speaker: Either "Sarah" or "Dennis"
-        - text: The dialogue line"""
-    )
-    return model
-
-
-def get_script_enhancer_model():
-    """Get the script enhancer model with instructions."""
-    model = GenerativeModel(
-        model_name='gemini-2.0-flash-exp',
-        system_instruction="""You're a veteran podcast producer who specializes in making technical 
-        content both entertaining and informative. You excel at adding natural humor, 
-        relatable analogies, and engaging banter while ensuring the core technical content 
-        remains accurate and valuable.
+        if not dialogue_list:
+            raise ValueError("No valid dialogue found in script")
         
-        IMPORTANT RULES:
-        1. NEVER change the host names - always keep Sarah and Dennis exactly as they are
-        2. NEVER add explicit reaction markers like *chuckles*, *laughs*, etc.
-        3. NEVER add new hosts or characters
+        # Generate audio segments
+        audio_files = audio_generator.generate_audio(dialogue_list)
         
-        Enhancement Guidelines:
-        1. Add natural verbal reactions ("Oh that's fascinating", "Wow", etc.)
-        2. Improve flow with smooth transitions
-        3. Maintain technical accuracy
-        4. Add engagement through analogies and examples
-        5. Express enthusiasm through natural dialogue
+        if not audio_files:
+            raise ValueError("No audio files were generated")
         
-        Return the enhanced script as a JSON with a 'dialogue' array, where each item has:
-        - speaker: Either "Sarah" or "Dennis"
-        - text: The enhanced dialogue line"""
-    )
-    return model
+        # Mix audio
+        podcast_mixer = PodcastMixer(output_dir=final_dir)
+        final_podcast_path = podcast_mixer.mix_audio(audio_files)
+        
+        return {
+            "status": "success",
+            "final_podcast": final_podcast_path,
+            "segment_files": audio_files,
+            "message": f"Audio generation successful! Generated {len(audio_files)} segments. Final podcast saved to: {final_podcast_path}"
+        }
+    except Exception as e:
+        error_msg = str(e)
+        return {
+            "status": "error",
+            "error": error_msg,
+            "message": f"Error generating audio: {error_msg}"
+        }
 
 
 def generate_podcast(pdf_file_path: str, progress_callback=None) -> Optional[str]:
     """
-    Generate a podcast from a research paper PDF using Google ADK agents.
+    Generate a podcast from a research paper PDF using Google ADK multi-agent system.
     
     Args:
         pdf_file_path: Path to the PDF file
@@ -224,217 +222,395 @@ def generate_podcast(pdf_file_path: str, progress_callback=None) -> Optional[str
             progress_callback("Extracting text from PDF...")
         paper_text = extract_text_from_pdf(pdf_file_path)
         
-        # Initialize models
-        if progress_callback:
-            progress_callback("Initializing AI models...")
-        research_model = get_research_analyst_model()
-        support_model = get_research_support_model()
-        script_model = get_script_writer_model()
-        enhancer_model = get_script_enhancer_model()
+        # Limit text length for API
+        paper_text_limited = paper_text[:50000] if len(paper_text) > 50000 else paper_text
         
-        # Configure audio tools
-        if progress_callback:
-            progress_callback("Configuring audio tools...")
-        audio_generator = PodcastAudioGenerator(output_dir=dirs['SEGMENTS'])
+        # Initialize audio context
+        global _audio_context
+        _audio_context = {
+            'segments_dir': dirs['SEGMENTS'],
+            'final_dir': dirs['FINAL'],
+            'data_dir': dirs['DATA']
+        }
         
-        # Sarah: Enthusiastic expert
-        audio_generator.add_voice(
-            "Sarah", 
-            os.getenv("CLAUDIA_VOICE_ID"),
-            VoiceConfig(
-                stability=0.35,
-                similarity_boost=0.75,
-                style=0.65,
-                use_speaker_boost=True
-            )
+        # Create audio generation tool
+        audio_tool = FunctionTool(generate_audio_segments)
+        
+        # Step 1: Research Analyst Agent
+        if progress_callback:
+            progress_callback("Initializing research analyst agent...")
+        research_analyst = Agent(
+            name="ResearchAnalyst",
+            model="gemini-2.0-flash-exp",
+            instruction="""You're a PhD researcher with a talent for breaking down complex
+            academic papers into clear, understandable summaries. You excel at identifying
+            key findings and their real-world implications. 
+            
+            Analyze the provided research paper text and create a comprehensive summary that includes:
+            1. Main findings and conclusions
+            2. Methodology overview
+            3. Key implications for the field
+            4. Limitations of the study
+            5. Suggested future research directions
+            
+            Make the summary accessible to an educated general audience while maintaining accuracy.
+            Return your analysis as a structured JSON with the following fields:
+            - title: Title of the research paper
+            - main_findings: List of key findings
+            - methodology: Research methodology description
+            - key_implications: List of implications
+            - limitations: List of limitations
+            - future_work: List of future research directions
+            - summary_date: Current date in ISO format (use: {datetime.now().isoformat()})
+            
+            Format your response as valid JSON only, no additional text.""",
+            output_key="paper_summary"
         )
         
-        # Dennis: Engaged and curious
-        audio_generator.add_voice(
-            "Dennis", 
-            os.getenv("BEN_VOICE_ID"),
-            VoiceConfig(
-                stability=0.4,
-                similarity_boost=0.75,
-                style=0.6,
-                use_speaker_boost=True
-            )
+        # Step 2: Research Support Agent
+        if progress_callback:
+            progress_callback("Initializing research support agent...")
+        research_support = Agent(
+            name="ResearchSupport",
+            model="gemini-2.0-flash-exp",
+            instruction="""You're a versatile research assistant who excels at finding 
+            supplementary information across academic fields. You have a talent for 
+            connecting academic research with real-world applications, current events, 
+            and practical examples, regardless of the field.
+            
+            Based on this research paper summary: {paper_summary}
+            
+            Find recent and relevant supporting materials that add context and real-world 
+            perspective to the topic. Focus on:
+            1. Recent developments in the field (within last 2 years)
+            2. Practical applications and case studies
+            3. Industry reports and expert opinions
+            4. Different perspectives and alternative approaches
+            5. Real-world impact and adoption
+            
+            Provide a structured collection of relevant supporting materials, examples, 
+            and context that would enhance understanding of the research topic.
+            Format your response as a clear, organized text with sections.""",
+            output_key="supporting_research"
         )
         
-        podcast_mixer = PodcastMixer(output_dir=dirs['FINAL'])
-        
-        # Step 1: Research Analysis
+        # Step 3: Script Writer Agent
         if progress_callback:
-            progress_callback("Analyzing research paper...")
-        summary_prompt = f"""Analyze the following research paper and create a comprehensive summary:
-
-{paper_text[:50000]}  # Limit text length for API
-
-Create a structured summary with all key components."""
+            progress_callback("Initializing script writer agent...")
+        script_writer = Agent(
+            name="ScriptWriter",
+            model="gemini-2.0-flash-exp",
+            instruction="""You're a skilled podcast writer who specializes in making technical 
+            content engaging and accessible. You create natural dialogue between two hosts: 
+            Sarah (a knowledgeable expert who explains concepts clearly) and Dennis (an informed 
+            co-host who asks thoughtful questions and helps guide the discussion).
+            
+            Using this paper summary: {paper_summary}
+            And this supporting research: {supporting_research}
+            
+            Create an engaging and informative podcast conversation between Sarah and Dennis. 
+            Make it feel natural while clearly distinguishing between paper findings and 
+            supplementary research.
+            
+            Source Attribution Guidelines:
+            • For Paper Content: "According to the paper...", "The researchers found that...", etc.
+            • For Supporting Research: "I recently read about...", "There's some interesting related work...", etc.
+            
+            Host Dynamics:
+            - Sarah: A knowledgeable but relatable expert who explains technical concepts with enthusiasm
+            - Dennis: An engaged and curious co-host who asks insightful questions
+            
+            Return the script as a JSON object with a 'dialogue' array, where each item has:
+            - speaker: Either "Sarah" or "Dennis"
+            - text: The dialogue line
+            
+            Format your response as valid JSON only, with this exact structure:
+            {{"dialogue": [{{"speaker": "Sarah", "text": "..."}}, {{"speaker": "Dennis", "text": "..."}}]}}""",
+            output_key="podcast_script"
+        )
         
-        response = research_model.generate_content(summary_prompt)
-        summary_response = response.text
+        # Step 4: Script Enhancer Agent
+        if progress_callback:
+            progress_callback("Initializing script enhancer agent...")
+        script_enhancer = Agent(
+            name="ScriptEnhancer",
+            model="gemini-2.0-flash-exp",
+            instruction="""You're a veteran podcast producer who specializes in making technical 
+            content both entertaining and informative. You excel at adding natural humor, 
+            relatable analogies, and engaging banter while ensuring the core technical content 
+            remains accurate and valuable.
+            
+            IMPORTANT RULES:
+            1. NEVER change the host names - always keep Sarah and Dennis exactly as they are
+            2. NEVER add explicit reaction markers like *chuckles*, *laughs*, etc.
+            3. NEVER add new hosts or characters
+            
+            Enhance this podcast script: {podcast_script}
+            
+            Enhancement Guidelines:
+            1. Add natural verbal reactions ("Oh that's fascinating", "Wow", etc.)
+            2. Improve flow with smooth transitions
+            3. Maintain technical accuracy
+            4. Add engagement through analogies and examples
+            5. Express enthusiasm through natural dialogue
+            
+            Return the enhanced script as a JSON object with the same structure:
+            {{"dialogue": [{{"speaker": "Sarah", "text": "..."}}, {{"speaker": "Dennis", "text": "..."}}]}}
+            
+            Format your response as valid JSON only.""",
+            output_key="enhanced_script"
+        )
         
-        # Parse summary (try to extract JSON from response)
+        # Step 5: Audio Generator Agent
+        if progress_callback:
+            progress_callback("Initializing audio generator agent...")
+        audio_generator_agent = Agent(
+            name="AudioGenerator",
+            model="gemini-2.0-flash-exp",
+            instruction="""You are responsible for generating the final podcast audio.
+            
+            You have access to the enhanced podcast script from the previous step: {enhanced_script}
+            
+            IMPORTANT: You MUST call the generate_audio_segments function with the enhanced_script as the argument.
+            The function requires the enhanced script (which is a JSON string or text containing JSON).
+            
+            Steps:
+            1. Take the enhanced_script from the context above
+            2. Call generate_audio_segments(enhanced_script) with the script as the argument
+            3. Report the result from the function call
+            
+            The function will return a dictionary with status, final_podcast path, and other details.
+            Report the final_podcast path if the status is "success", or report the error if status is "error".""",
+            tools=[audio_tool],
+            output_key="audio_result"
+        )
+        
+        # Create Sequential Agent workflow
+        if progress_callback:
+            progress_callback("Creating multi-agent workflow...")
+        root_agent = SequentialAgent(
+            name="PodcastGenerationPipeline",
+            sub_agents=[
+                research_analyst,
+                research_support,
+                script_writer,
+                script_enhancer,
+                audio_generator_agent
+            ]
+        )
+        
+        # Run the workflow
+        if progress_callback:
+            progress_callback("Starting podcast generation process...")
+        runner = InMemoryRunner(agent=root_agent)
+        
+        # Create the initial prompt with paper text
+        initial_prompt = f"""Analyze this research paper and create a podcast:
+
+{paper_text_limited}
+
+Begin the analysis process."""
+        
+        # Execute the workflow (handle async)
+        # Use run_debug to properly handle function calls and get full response
         try:
-            # Try to find JSON in the response
-            if "```json" in summary_response:
-                json_start = summary_response.find("```json") + 7
-                json_end = summary_response.find("```", json_start)
-                summary_json = json.loads(summary_response[json_start:json_end].strip())
-            elif "{" in summary_response:
-                json_start = summary_response.find("{")
-                json_end = summary_response.rfind("}") + 1
-                summary_json = json.loads(summary_response[json_start:json_end])
-            else:
-                # Fallback: create summary from text
-                summary_json = {
-                    "title": "Research Paper",
-                    "main_findings": [summary_response[:200]],
-                    "methodology": summary_response[:500],
-                    "key_implications": [summary_response[:200]],
-                    "limitations": [],
-                    "future_work": [],
-                    "summary_date": datetime.now().isoformat()
-                }
-        except json.JSONDecodeError:
-            # Fallback summary
-            summary_json = {
-                "title": "Research Paper",
-                "main_findings": [summary_response[:200]],
-                "methodology": summary_response[:500],
-                "key_implications": [summary_response[:200]],
-                "limitations": [],
-                "future_work": [],
-                "summary_date": datetime.now().isoformat()
-            }
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            # run_debug properly handles function calls and returns full response
+            response = loop.run_until_complete(runner.run_debug(initial_prompt))
+            loop.close()
+        except Exception as e:
+            # Fallback: try regular run
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                response = loop.run_until_complete(runner.run(initial_prompt))
+                loop.close()
+            except Exception as e2:
+                # Last resort: try sync if available
+                try:
+                    response = runner.run(initial_prompt)
+                except Exception as e3:
+                    raise RuntimeError(f"Failed to execute workflow: {str(e3)}")
         
-        # Save summary
-        summary_path = os.path.join(dirs['DATA'], "paper_summary.json")
-        with open(summary_path, 'w') as f:
-            json.dump(summary_json, f, indent=2)
-        
-        # Step 2: Supporting Research
+        # Save intermediate results
         if progress_callback:
-            progress_callback("Finding supporting materials...")
-        support_prompt = f"""Based on this research paper summary, find recent and relevant supporting materials:
-
-{json.dumps(summary_json, indent=2)}
-
-Find information that adds context, real-world applications, and different perspectives."""
+            progress_callback("Saving intermediate results...")
         
-        response = support_model.generate_content(support_prompt)
-        supporting_research = response.text
+        # Try to extract results from the response
+        # The response structure may vary - try different access patterns
+        state = {}
+        if hasattr(response, 'state'):
+            state = response.state
+        elif hasattr(response, 'get'):
+            state = response
+        elif isinstance(response, dict):
+            state = response
+        
+        # Save paper summary if available
+        if 'paper_summary' in state:
+            summary_path = os.path.join(dirs['DATA'], "paper_summary.json")
+            try:
+                summary_text = state.get('paper_summary', '') if isinstance(state, dict) else getattr(state, 'paper_summary', '')
+                # Try to parse as JSON
+                if summary_text.strip().startswith('{'):
+                    summary_json = json.loads(summary_text)
+                else:
+                    # Extract JSON from text if wrapped
+                    import re
+                    json_match = re.search(r'\{.*\}', summary_text, re.DOTALL)
+                    if json_match:
+                        summary_json = json.loads(json_match.group())
+                    else:
+                        summary_json = {"summary": summary_text}
+                with open(summary_path, 'w') as f:
+                    json.dump(summary_json, f, indent=2)
+            except Exception as e:
+                print(f"Error saving summary: {e}")
         
         # Save supporting research
-        support_path = os.path.join(dirs['DATA'], "supporting_research.json")
-        with open(support_path, 'w') as f:
-            json.dump({"research": supporting_research}, f, indent=2)
+        if 'supporting_research' in state:
+            support_path = os.path.join(dirs['DATA'], "supporting_research.json")
+            support_text = state.get('supporting_research', '') if isinstance(state, dict) else getattr(state, 'supporting_research', '')
+            with open(support_path, 'w') as f:
+                json.dump({"research": support_text}, f, indent=2)
         
-        # Step 3: Create Podcast Script
+        # Save scripts
+        if 'podcast_script' in state:
+            script_path = os.path.join(dirs['DATA'], "podcast_script.json")
+            try:
+                script_text = state.get('podcast_script', '') if isinstance(state, dict) else getattr(state, 'podcast_script', '')
+                if script_text.strip().startswith('{'):
+                    script_json = json.loads(script_text)
+                else:
+                    import re
+                    json_match = re.search(r'\{.*\}', script_text, re.DOTALL)
+                    if json_match:
+                        script_json = json.loads(json_match.group())
+                    else:
+                        script_json = {"dialogue": []}
+                with open(script_path, 'w') as f:
+                    json.dump(script_json, f, indent=2)
+            except Exception as e:
+                print(f"Error saving script: {e}")
+        
+        if 'enhanced_script' in state:
+            enhanced_script_path = os.path.join(dirs['DATA'], "enhanced_podcast_script.json")
+            try:
+                enhanced_text = state.get('enhanced_script', '') if isinstance(state, dict) else getattr(state, 'enhanced_script', '')
+                if enhanced_text.strip().startswith('{'):
+                    enhanced_json = json.loads(enhanced_text)
+                else:
+                    import re
+                    json_match = re.search(r'\{.*\}', enhanced_text, re.DOTALL)
+                    if json_match:
+                        enhanced_json = json.loads(json_match.group())
+                    else:
+                        enhanced_json = {"dialogue": []}
+                with open(enhanced_script_path, 'w') as f:
+                    json.dump(enhanced_json, f, indent=2)
+            except Exception as e:
+                print(f"Error saving enhanced script: {e}")
+        
+        # Extract final podcast path from audio result
         if progress_callback:
-            progress_callback("Creating podcast script...")
-        script_prompt = f"""Create an engaging podcast script based on:
-
-Paper Summary:
-{json.dumps(summary_json, indent=2)}
-
-Supporting Research:
-{supporting_research}
-
-Create a natural conversation between Sarah and Dennis that clearly distinguishes between paper findings and supplementary research."""
+            progress_callback("Extracting podcast file path...")
         
-        response = script_model.generate_content(script_prompt)
-        script_response = response.text
+        # Check if audio was generated via FunctionTool
+        final_podcast_path = None
         
-        # Parse script
-        try:
-            if "```json" in script_response:
-                json_start = script_response.find("```json") + 7
-                json_end = script_response.find("```", json_start)
-                script_json = json.loads(script_response[json_start:json_end].strip())
-            elif "{" in script_response:
-                json_start = script_response.find("{")
-                json_end = script_response.rfind("}") + 1
-                script_json = json.loads(script_response[json_start:json_end])
-            else:
-                raise ValueError("No JSON found in script response")
-        except (json.JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Failed to parse script JSON: {str(e)}")
+        if 'audio_result' in state:
+            audio_result = state.get('audio_result', '') if isinstance(state, dict) else getattr(state, 'audio_result', '')
+            
+            # Try to extract from the result
+            try:
+                # If it's a string, try to parse it or extract JSON
+                if isinstance(audio_result, str):
+                    # Check if it contains JSON
+                    import re
+                    json_match = re.search(r'\{.*\}', audio_result, re.DOTALL)
+                    if json_match:
+                        audio_result_dict = json.loads(json_match.group())
+                        if isinstance(audio_result_dict, dict) and 'final_podcast' in audio_result_dict:
+                            final_podcast_path = audio_result_dict['final_podcast']
+                    # Check if it mentions a path
+                    elif 'saved to:' in audio_result or 'Final podcast' in audio_result:
+                        path_match = re.search(r'(?:saved to:|Final podcast)[:\s]+(.+?)(?:\n|$)', audio_result)
+                        if path_match:
+                            final_podcast_path = path_match.group(1).strip()
+                
+                # If it's already a dict
+                elif isinstance(audio_result, dict):
+                    if 'final_podcast' in audio_result:
+                        final_podcast_path = audio_result['final_podcast']
+                    elif 'status' in audio_result and audio_result.get('status') == 'success':
+                        final_podcast_path = audio_result.get('final_podcast')
+                
+                # Verify the path exists
+                if final_podcast_path and os.path.exists(final_podcast_path):
+                    if progress_callback:
+                        progress_callback("Podcast generation complete!")
+                    return final_podcast_path
+                    
+            except Exception as e:
+                print(f"Error parsing audio result: {e}")
+                print(f"Audio result type: {type(audio_result)}")
+                print(f"Audio result preview: {str(audio_result)[:500]}")
         
-        # Save initial script
-        script_path = os.path.join(dirs['DATA'], "podcast_script.json")
-        with open(script_path, 'w') as f:
-            json.dump(script_json, f, indent=2)
+        # Fallback: Check expected path
+        expected_path = os.path.join(dirs['FINAL'], "podcast_final.mp3")
+        if os.path.exists(expected_path):
+            if progress_callback:
+                progress_callback("Podcast generation complete!")
+            return expected_path
         
-        # Step 4: Enhance Script
+        # If audio wasn't generated, try to generate it directly as fallback
         if progress_callback:
-            progress_callback("Enhancing podcast script...")
-        enhance_prompt = f"""Enhance this podcast script to be more engaging while maintaining accuracy:
-
-{json.dumps(script_json, indent=2)}
-
-Remember: Keep Sarah and Dennis as the only hosts, no action markers, and make it more natural and engaging."""
+            progress_callback("Audio generation via agent may have failed. Attempting direct generation...")
         
-        response = enhancer_model.generate_content(enhance_prompt)
-        enhanced_script_response = response.text
+        # Get enhanced script from state for fallback
+        enhanced_script_text = ""
+        if 'enhanced_script' in state:
+            enhanced_script_text = state.get('enhanced_script', '') if isinstance(state, dict) else getattr(state, 'enhanced_script', '')
         
-        # Parse enhanced script
-        try:
-            if "```json" in enhanced_script_response:
-                json_start = enhanced_script_response.find("```json") + 7
-                json_end = enhanced_script_response.find("```", json_start)
-                enhanced_script = json.loads(enhanced_script_response[json_start:json_end].strip())
-            elif "{" in enhanced_script_response:
-                json_start = enhanced_script_response.find("{")
-                json_end = enhanced_script_response.rfind("}") + 1
-                enhanced_script = json.loads(enhanced_script_response[json_start:json_end])
-            else:
-                # Use original script if enhancement parsing fails
-                enhanced_script = script_json
-        except (json.JSONDecodeError, ValueError):
-            enhanced_script = script_json
+        if not enhanced_script_text:
+            # Try to get from saved file
+            enhanced_script_path = os.path.join(dirs['DATA'], "enhanced_podcast_script.json")
+            if os.path.exists(enhanced_script_path):
+                with open(enhanced_script_path, 'r') as f:
+                    enhanced_script_data = json.load(f)
+                    enhanced_script_text = json.dumps(enhanced_script_data)
         
-        # Save enhanced script
-        enhanced_script_path = os.path.join(dirs['DATA'], "enhanced_podcast_script.json")
-        with open(enhanced_script_path, 'w') as f:
-            json.dump(enhanced_script, f, indent=2)
+        if enhanced_script_text:
+            # Call the function directly as fallback
+            try:
+                audio_result = generate_audio_segments(enhanced_script_text)
+                if isinstance(audio_result, dict) and audio_result.get('status') == 'success':
+                    final_path = audio_result.get('final_podcast')
+                    if final_path and os.path.exists(final_path):
+                        if progress_callback:
+                            progress_callback("Podcast generation complete (via fallback)!")
+                        return final_path
+                    elif final_path:
+                        # Path was returned but file doesn't exist - check expected location
+                        expected_path = os.path.join(dirs['FINAL'], "podcast_final.mp3")
+                        if os.path.exists(expected_path):
+                            return expected_path
+            except Exception as e:
+                error_msg = f"Fallback audio generation also failed: {str(e)}"
+                if progress_callback:
+                    progress_callback(error_msg)
+                # Save error for debugging
+                error_path = os.path.join(dirs['DATA'], "audio_generation_error.json")
+                with open(error_path, 'w') as f:
+                    json.dump({
+                        "error": str(e),
+                        "audio_result_from_agent": str(audio_result)[:500] if 'audio_result' in locals() else None,
+                        "enhanced_script_preview": enhanced_script_text[:500] if enhanced_script_text else None
+                    }, f, indent=2)
         
-        # Step 5: Generate Audio
-        if progress_callback:
-            progress_callback("Generating audio segments...")
-        
-        # Convert dialogue to list of dicts
-        dialogue_list = []
-        for line in enhanced_script.get('dialogue', []):
-            if isinstance(line, dict):
-                dialogue_list.append({
-                    'speaker': line.get('speaker', ''),
-                    'text': line.get('text', '')
-                })
-        
-        # Generate audio segments
-        audio_files = audio_generator.generate_audio(dialogue_list)
-        
-        if progress_callback:
-            progress_callback("Mixing final podcast...")
-        
-        # Mix audio
-        final_podcast_path = podcast_mixer.mix_audio(audio_files)
-        
-        # Save audio metadata
-        audio_meta = {
-            "segment_files": audio_files,
-            "final_podcast": final_podcast_path
-        }
-        audio_meta_path = os.path.join(dirs['DATA'], "audio_generation_meta.json")
-        with open(audio_meta_path, 'w') as f:
-            json.dump(audio_meta, f, indent=2)
-        
-        if progress_callback:
-            progress_callback("Podcast generation complete!")
-        
-        return final_podcast_path
+        # If we get here, audio generation failed
+        raise ValueError("Failed to generate podcast audio. Check audio_generation_error.json for details.")
         
     except Exception as e:
         if progress_callback:
@@ -452,7 +628,7 @@ def main():
     )
     
     st.title("🎙️ AI Agents Podcast Generator")
-    st.markdown("Convert research papers into engaging podcast conversations using Google ADK agents.")
+    st.markdown("Convert research papers into engaging podcast conversations using Google ADK multi-agent system.")
     
     # Initialize session state
     if 'podcast_path' not in st.session_state:
@@ -546,7 +722,7 @@ def main():
         3. **Listen**: Once generated, listen to your podcast using the audio player
         
         ### Features:
-        - 🤖 AI-powered research analysis using Google ADK
+        - 🤖 Multi-agent system using Google ADK
         - 📝 Natural dialogue generation between two hosts
         - 🎙️ High-quality voice synthesis
         - 🎵 Professional audio mixing
