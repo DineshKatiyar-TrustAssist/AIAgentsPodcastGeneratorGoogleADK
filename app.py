@@ -25,13 +25,11 @@ warnings.filterwarnings('ignore', message='.*App name mismatch.*')
 warnings.filterwarnings('ignore', message='.*app name.*')
 
 
-# Load environment variables
+# Load environment variables (but don't use GOOGLE_API_KEY from .env - user must provide it in UI)
 load_dotenv()
 
-# Set Google API key for ADK
-if os.getenv("GOOGLE_API_KEY"):
-    os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
-    os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "FALSE"
+# Set default for Vertex AI (user will provide API key via UI)
+os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "FALSE"
 
 
 def setup_directories():
@@ -623,10 +621,58 @@ def main():
         st.session_state.podcast_path = None
     if 'status' not in st.session_state:
         st.session_state.status = None
+    if 'google_api_key' not in st.session_state:
+        st.session_state.google_api_key = None
+    
+    # API Key Input Section (at the top, before everything else)
+    st.sidebar.header("🔑 API Configuration")
+    st.sidebar.markdown("**Required**: Enter your Google API Key to use the application.")
+    
+    # Get API key from session state if it exists, otherwise empty
+    default_key = st.session_state.google_api_key if st.session_state.google_api_key else ""
+    
+    # API Key input - always required, never pre-filled from .env
+    api_key = st.sidebar.text_input(
+        "Google API Key *",
+        value=default_key,
+        type="password",
+        help="Enter your Google API Key for Gemini models and TTS. Get it from https://makersuite.google.com/app/apikey",
+        key="api_key_input",
+        placeholder="Enter your Google API Key here"
+    )
+    
+    # Validate API key - REQUIRED FIELD
+    if not api_key or not api_key.strip():
+        st.error("❌ **Error: Google API Key is required!**")
+        st.markdown("""
+        ### ⚠️ Application cannot proceed without API Key
+        
+        **Please provide your Google API Key:**
+        
+        1. Get your API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+        2. Enter it in the sidebar above
+        3. The application will not work without a valid API key
+        
+        **Note**: 
+        - Your API key is stored only in your browser session and is not saved to disk
+        - The application does NOT use API keys from .env file - you must enter it here
+        - The key is required for all operations (Gemini models and Google TTS)
+        """)
+        st.stop()
+    
+    # Store API key in session state and set as environment variable
+    # This overwrites any existing GOOGLE_API_KEY from .env
+    st.session_state.google_api_key = api_key.strip()
+    os.environ["GOOGLE_API_KEY"] = st.session_state.google_api_key
+    os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "FALSE"
+    
+    # Show confirmation
+    if api_key.strip():
+        st.sidebar.success("✅ API Key configured")
     
     # Sidebar for file upload
     with st.sidebar:
-        st.header("Upload PDF")
+        st.header("📄 Upload PDF")
         uploaded_file = st.file_uploader(
             "Choose a PDF file",
             type="pdf",
@@ -647,8 +693,10 @@ def main():
             
             # Generate button
             if st.button("Generate Podcast", type="primary", use_container_width=True):
-                if not os.getenv("GOOGLE_API_KEY"):
-                    st.error("Please set GOOGLE_API_KEY in your .env file")
+                # Verify API key is still set
+                if not st.session_state.google_api_key or not os.getenv("GOOGLE_API_KEY"):
+                    st.error("❌ Google API Key is required! Please enter it in the sidebar.")
+                    st.stop()
                 else:
                     st.session_state.status = "Generating podcast..."
                     st.session_state.podcast_path = None
@@ -701,19 +749,26 @@ def main():
         st.error(st.session_state.status)
     else:
         # Instructions
-        st.info("👆 Upload a PDF file in the sidebar to get started!")
+        if st.session_state.google_api_key:
+            st.info("👆 Upload a PDF file in the sidebar to get started!")
+        else:
+            st.warning("⚠️ Please enter your Google API Key in the sidebar to continue.")
         
         st.markdown("""
         ### How it works:
-        1. **Upload a PDF**: Select a research paper PDF file
-        2. **Generate**: Click the "Generate Podcast" button
-        3. **Listen**: Once generated, listen to your podcast using the audio player
+        1. **Enter API Key**: Provide your Google API Key in the sidebar (required)
+        2. **Upload a PDF**: Select a research paper PDF file
+        3. **Generate**: Click the "Generate Podcast" button
+        4. **Listen**: Once generated, listen to your podcast using the audio player
         
         ### Features:
         - 🤖 Multi-agent system using Google ADK
         - 📝 Natural dialogue generation between two hosts
-        - 🎙️ High-quality voice synthesis
+        - 🎙️ High-quality voice synthesis using Google TTS
         - 🎵 Professional audio mixing
+        
+        ### Getting Your API Key:
+        Get your Google API Key from [Google AI Studio](https://makersuite.google.com/app/apikey)
         """)
 
 

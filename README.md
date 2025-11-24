@@ -52,8 +52,7 @@ The system uses Google ADK with a **SequentialAgent** workflow that orchestrates
 ### Prerequisites
 
 - Python 3.10 or higher
-- API keys for:
-  - Google API Key (for Gemini models and TTS via Google ADK)
+- Google API Key (entered in the application UI - no .env file needed)
 
 ### Setup
 
@@ -68,20 +67,17 @@ cd AIAgentsPodcastGenerator
 pip install -r requirements.txt
 ```
 
-3. Create a `.env` file in the project root with your API keys:
-```env
-GOOGLE_API_KEY=your_google_api_key
-SARAH_VOICE_NAME=Puck
-DENNIS_VOICE_NAME=Kore
-```
+3. **No .env file required!** The application will prompt you to enter your Google API key in the web UI.
 
-**Getting API Keys:**
+**Getting Your API Key:**
 - **Google API Key**: Get your API key from [Google AI Studio](https://makersuite.google.com/app/apikey) or [Google Cloud Console](https://console.cloud.google.com/)
 - The API key is used for both Gemini models (for agents) and Google TTS (for audio generation)
+- You'll enter this key in the Streamlit UI when you start the application
 
 **Voice Configuration (Optional):**
-- **SARAH_VOICE_NAME**: Google TTS prebuilt voice name for Sarah (default: "Puck" - female voice)
-- **DENNIS_VOICE_NAME**: Google TTS prebuilt voice name for Dennis (default: "Kore" - male voice)
+- Voice names can be set via environment variables if desired:
+  - **SARAH_VOICE_NAME**: Google TTS prebuilt voice name for Sarah (default: "Puck" - female voice)
+  - **DENNIS_VOICE_NAME**: Google TTS prebuilt voice name for Dennis (default: "Kore" - male voice)
 - Available voices include: Kore, Puck, Charon, Fenrir, and others
 - If not specified, defaults to Puck for Sarah and Kore for Dennis
 
@@ -98,12 +94,18 @@ streamlit run app.py
 
 2. **Open your browser**: The app will automatically open at `http://localhost:8501`
 
-3. **Upload a PDF**:
+3. **Enter API Key** (Required):
+   - In the sidebar, enter your Google API Key in the "🔑 API Configuration" section
+   - Get your API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+   - The application will not work without a valid API key
+   - Your key is stored only in your browser session (not saved to disk)
+
+4. **Upload a PDF**:
    - Use the file uploader in the sidebar
    - Select a research paper PDF file
    - Click "Generate Podcast"
 
-4. **Wait for generation**: The system will process your PDF through multiple stages:
+5. **Wait for generation**: The system will process your PDF through multiple stages:
    - Loading PDF document
    - Initializing AI agents
    - Analyzing research paper
@@ -113,7 +115,7 @@ streamlit run app.py
    - Generating audio
    - Mixing final podcast
 
-5. **Listen to your podcast**: Once generated, the audio player will appear on the main page with:
+6. **Listen to your podcast**: Once generated, the audio player will appear on the main page with:
    - Play/pause controls
    - Seek bar for navigation
    - Download button to save the MP3 file
@@ -147,14 +149,19 @@ The system will:
 - **Download Button**: One-click download of generated podcasts
 
 ### Sidebar
+- **API Configuration**: Required input field for Google API Key
+  - Password-protected input for security
+  - Key is stored only in browser session (not saved to disk)
+  - Application stops if key is not provided
 - **File Upload**: Drag-and-drop or click to upload PDF files
 - **Generate Button**: Start the podcast generation process
 - **Status Messages**: Success/error notifications
 
 ### Error Handling
-- Validates API key configuration before processing
-- Provides clear error messages for troubleshooting
-- Handles file upload issues gracefully
+- **API Key Validation**: Application requires API key input and stops if not provided
+- **Clear Error Messages**: Provides detailed error messages for troubleshooting
+- **File Upload Issues**: Handles file upload problems gracefully
+- **No .env Required**: Application does not use API keys from .env file - must be entered in UI
 
 ## Output Structure
 
@@ -223,7 +230,7 @@ The system uses Google TTS prebuilt voices:
 - And others - check Google TTS documentation for full list
 
 **Customization:**
-Set `SARAH_VOICE_NAME` and `DENNIS_VOICE_NAME` in your `.env` file to use different voices.
+Set `SARAH_VOICE_NAME` and `DENNIS_VOICE_NAME` as environment variables (optional) to use different voices. Defaults are used if not specified.
 
 ## Configuration
 
@@ -263,7 +270,11 @@ AIAgentsPodcastGenerator/
 ├── app.py                 # Main application with Streamlit UI and Google ADK agents
 ├── tools.py               # Audio generation and mixing tools
 ├── requirements.txt       # Python dependencies
-├── .env                   # Environment variables (create this)
+├── Dockerfile             # Docker configuration for deployment
+├── .dockerignore          # Files excluded from Docker build
+├── cloudbuild.yaml        # Google Cloud Build configuration
+├── app.yaml               # App Engine configuration
+├── DEPLOYMENT.md          # Deployment guide
 ├── uploads/               # Temporary storage for uploaded PDFs
 └── outputs/               # Generated content (timestamped)
     └── YYYYMMDD_HHMMSS/
@@ -271,6 +282,8 @@ AIAgentsPodcastGenerator/
         ├── segments/      # Individual audio segments
         └── podcast/       # Final mixed podcast
 ```
+
+**Note**: No `.env` file is required - users enter the Google API key directly in the Streamlit UI.
 
 ## Features in Detail
 
@@ -319,7 +332,10 @@ AIAgentsPodcastGenerator/
 
 ## Notes
 
-- The system requires a valid Google API Key for both Gemini models (agents) and Google TTS (audio)
+- **API Key Required**: The system requires a valid Google API Key entered in the Streamlit UI
+  - The API key is NOT read from .env file - users must enter it in the application
+  - Key is stored only in browser session (not persisted to disk)
+  - Required for both Gemini models (agents) and Google TTS (audio generation)
 - Voice names are Google TTS prebuilt voices (no separate voice creation needed)
 - PDF files are automatically processed - text is extracted directly from uploaded files using PyPDF2
 - Output directories are automatically created with timestamps
@@ -335,7 +351,11 @@ AIAgentsPodcastGenerator/
 
 ### Common Issues
 
-1. **API Key Errors**: Ensure `GOOGLE_API_KEY` is set in your `.env` file
+1. **API Key Errors**: 
+   - Ensure you enter your Google API Key in the Streamlit UI sidebar
+   - The application does NOT use API keys from .env file
+   - Get your API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+   - Application will stop and show an error if API key is not provided
 2. **PDF Processing Errors**: Ensure the PDF is not corrupted and contains extractable text
 3. **Generation Fails**: Check the console/logs for detailed error messages. Verify Google API quota limits
 4. **Audio Player Not Showing**: Verify that the podcast file was successfully generated in `outputs/`
@@ -344,11 +364,43 @@ AIAgentsPodcastGenerator/
 ### Getting Help
 
 - Check that all dependencies are installed: `pip install -r requirements.txt`
-- Verify API keys are correctly set in `.env` file (especially `GOOGLE_API_KEY`)
+- **Enter your Google API Key in the Streamlit UI** (required - not from .env file)
 - Ensure you have sufficient API quotas for Google Gemini and Google TTS
 - Check that your Google API key has access to both Gemini models and TTS features
 - Check Google ADK documentation: https://google.github.io/adk-docs/
 - Verify your Google API key has access to Gemini models
+- If the application stops with an API key error, check that you've entered the key in the sidebar
+
+## Deployment
+
+This application can be deployed to Google Cloud Platform using Docker. See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment instructions.
+
+### Quick Deploy to Cloud Run
+
+```bash
+# Build and deploy
+gcloud builds submit --tag gcr.io/$PROJECT_ID/podcast-generator
+gcloud run deploy podcast-generator \
+    --image gcr.io/$PROJECT_ID/podcast-generator \
+    --platform managed \
+    --region us-central1 \
+    --allow-unauthenticated \
+    --port 8501 \
+    --memory 2Gi \
+    --cpu 2 \
+    --timeout 3600
+```
+
+**Note**: The application requires users to enter their Google API key in the UI. For production deployments, you may want to set up authentication or use environment variables, but the default behavior is user-provided keys in the UI.
+
+### Docker Support
+
+The application includes:
+- **Dockerfile**: For containerizing the application
+- **.dockerignore**: Excludes unnecessary files from Docker build
+- **cloudbuild.yaml**: Cloud Build configuration for automated deployments
+- **app.yaml**: App Engine configuration (alternative deployment)
+- **DEPLOYMENT.md**: Comprehensive deployment guide
 
 ## License
 
