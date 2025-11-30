@@ -140,8 +140,8 @@ def generate_audio_segments(enhanced_script: str) -> Dict[str, Any]:
         # Add voices using Google TTS prebuilt voices
         # Available voices: Kore, Puck, Charon, Fenrir, Kore (male), Puck (female), etc.
         # Sarah uses a female voice, Dennis uses a male voice
-        sarah_voice = os.getenv("SARAH_VOICE_NAME", "Puck")  # Default to Puck (female)
-        dennis_voice = os.getenv("DENNIS_VOICE_NAME", "Kore")  # Default to Kore (male)
+        sarah_voice = os.getenv("SARAH_VOICE_NAME", "Kore")  # Default to Kore (female)
+        dennis_voice = os.getenv("DENNIS_VOICE_NAME", "Puck")  # Default to Puck (male)
         
         audio_generator.add_voice(
             "Dennis", 
