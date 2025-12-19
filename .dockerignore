@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Outputs and data
+outputs/
+uploads/
+data/
+*.mp3
+*.wav
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Cloud
+.gcloudignore
+cloudbuild.yaml
+app.yaml
+
+# Jupyter
+*.ipynb
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+

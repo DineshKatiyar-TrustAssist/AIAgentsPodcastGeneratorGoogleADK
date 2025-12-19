@@ -8,6 +8,7 @@ This project uses Google ADK to transform academic research papers into natural,
 
 ## Features
 
+- **🔐 User Authentication**: Secure email-based signup with email verification and password protection
 - **🎨 Streamlit Web UI**: User-friendly interface for uploading PDFs and listening to generated podcasts
 - **📄 PDF Upload**: Easy drag-and-drop PDF upload functionality
 - **🎧 Audio Player**: Built-in audio player to listen to generated podcasts directly in the browser
@@ -52,7 +53,8 @@ The system uses Google ADK with a **SequentialAgent** workflow that orchestrates
 ### Prerequisites
 
 - Python 3.10 or higher
-- Google API Key (entered in the application UI - no .env file needed)
+- Google API Key (entered in the application UI after login)
+- Gmail account for sending verification emails (with App Password)
 
 ### Setup
 
@@ -67,19 +69,36 @@ cd AIAgentsPodcastGenerator
 pip install -r requirements.txt
 ```
 
-3. **No .env file required!** The application will prompt you to enter your Google API key in the web UI.
+3. Configure environment variables in `.env`:
+```bash
+# Gmail SMTP for sending verification emails
+GMAIL_SENDER_EMAIL="your-email@gmail.com"
+GMAIL_APP_PASSWORD="your-16-char-app-password"
 
-**Getting Your API Key:**
-- **Google API Key**: Get your API key from [Google AI Studio](https://makersuite.google.com/app/apikey) or [Google Cloud Console](https://console.cloud.google.com/)
+# Admin notification email (receives alerts for new signups)
+ADMIN_NOTIFICATION_EMAIL="admin@example.com"
+
+# Application URL (for email verification links)
+APP_BASE_URL="http://localhost:8501"
+```
+
+**Getting Gmail App Password:**
+1. Go to your Google Account > Security
+2. Enable 2-Step Verification if not already enabled
+3. Go to App passwords (under 2-Step Verification)
+4. Generate a new app password for "Mail"
+5. Use the 16-character password in `GMAIL_APP_PASSWORD`
+
+**Getting Your Google API Key:**
+- Get your API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
 - The API key is used for both Gemini models (for agents) and Google TTS (for audio generation)
-- You'll enter this key in the Streamlit UI when you start the application
+- You'll enter this key in the Streamlit UI after logging in
 
 **Voice Configuration (Optional):**
 - Voice names can be set via environment variables if desired:
-  - **SARAH_VOICE_NAME**: Google TTS prebuilt voice name for Sarah (default: "Puck" - female voice)
-  - **DENNIS_VOICE_NAME**: Google TTS prebuilt voice name for Dennis (default: "Kore" - male voice)
+  - **SARAH_VOICE_NAME**: Google TTS prebuilt voice name for Sarah (default: "Kore" - female voice)
+  - **DENNIS_VOICE_NAME**: Google TTS prebuilt voice name for Dennis (default: "Puck" - male voice)
 - Available voices include: Kore, Puck, Charon, Fenrir, and others
-- If not specified, defaults to Puck for Sarah and Kore for Dennis
 
 ## Usage
 
@@ -94,18 +113,30 @@ streamlit run app.py
 
 2. **Open your browser**: The app will automatically open at `http://localhost:8501`
 
-3. **Enter API Key** (Required):
+3. **Create an Account** (First-time users):
+   - Click "Create Account" on the login page
+   - Enter your email address
+   - Check your email for a verification link
+   - Click the verification link
+   - Create a secure password (min 8 chars, uppercase, lowercase, digit, special char)
+
+4. **Sign In** (Returning users):
+   - Enter your email and password
+   - Click "Sign In"
+   - Use "Forgot Password?" if you need to reset your password
+
+5. **Enter API Key** (Required after login):
    - In the sidebar, enter your Google API Key in the "🔑 API Configuration" section
    - Get your API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
    - The application will not work without a valid API key
    - Your key is stored only in your browser session (not saved to disk)
 
-4. **Upload a PDF**:
+6. **Upload a PDF**:
    - Use the file uploader in the sidebar
    - Select a research paper PDF file
    - Click "Generate Podcast"
 
-5. **Wait for generation**: The system will process your PDF through multiple stages:
+7. **Wait for generation**: The system will process your PDF through multiple stages:
    - Loading PDF document
    - Initializing AI agents
    - Analyzing research paper
@@ -115,7 +146,7 @@ streamlit run app.py
    - Generating audio
    - Mixing final podcast
 
-6. **Listen to your podcast**: Once generated, the audio player will appear on the main page with:
+8. **Listen to your podcast**: Once generated, the audio player will appear on the main page with:
    - Play/pause controls
    - Seek bar for navigation
    - Download button to save the MP3 file
@@ -262,6 +293,8 @@ Default audio configuration:
 - `python-dotenv`: Environment variable management
 - `streamlit`: Web UI framework
 - `PyPDF2`: PDF text extraction library
+- `bcrypt`: Secure password hashing
+- `email-validator`: Email address validation
 
 ## Project Structure
 
@@ -270,11 +303,22 @@ AIAgentsPodcastGenerator/
 ├── app.py                 # Main application with Streamlit UI and Google ADK agents
 ├── tools.py               # Audio generation and mixing tools
 ├── requirements.txt       # Python dependencies
+├── .env                   # Environment variables (Gmail SMTP, admin email)
+├── .gitignore             # Git ignore file
 ├── Dockerfile             # Docker configuration for deployment
 ├── .dockerignore          # Files excluded from Docker build
 ├── cloudbuild.yaml        # Google Cloud Build configuration
 ├── app.yaml               # App Engine configuration
 ├── DEPLOYMENT.md          # Deployment guide
+├── auth/                  # Authentication module
+│   ├── __init__.py        # Module exports
+│   ├── database.py        # SQLite database operations
+│   ├── models.py          # Pydantic models for users/tokens
+│   ├── security.py        # Password hashing, token generation
+│   ├── email_service.py   # Gmail SMTP email service
+│   └── utils.py           # URL generation helpers
+├── data/                  # Application data
+│   └── auth.db            # SQLite database (auto-created)
 ├── uploads/               # Temporary storage for uploaded PDFs
 └── outputs/               # Generated content (timestamped)
     └── YYYYMMDD_HHMMSS/
@@ -283,7 +327,7 @@ AIAgentsPodcastGenerator/
         └── podcast/       # Final mixed podcast
 ```
 
-**Note**: No `.env` file is required - users enter the Google API key directly in the Streamlit UI.
+**Note**: The `.env` file is required for email functionality. Users enter their Google API key in the Streamlit UI after logging in.
 
 ## Features in Detail
 

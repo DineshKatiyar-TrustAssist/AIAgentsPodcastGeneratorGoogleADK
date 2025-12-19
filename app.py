@@ -18,6 +18,28 @@ import warnings
 import streamlit as st
 from tools import PodcastAudioGenerator, PodcastMixer, VoiceConfig
 
+# Import authentication module
+from auth import (
+    init_database,
+    create_user,
+    get_user_by_email,
+    get_user_by_id,
+    update_user_password,
+    verify_user_email,
+    update_last_login,
+    create_verification_token,
+    get_verification_token,
+    consume_verification_token,
+    create_reset_token,
+    get_reset_token,
+    consume_reset_token,
+    EmailService,
+    SecurityManager,
+    generate_verification_link,
+    generate_reset_link,
+    sanitize_email
+)
+
 # Suppress the function_call warning - it's expected behavior when agents use tools
 warnings.filterwarnings('ignore', message='.*non-text parts in the response.*')
 warnings.filterwarnings('ignore', message='.*function_call.*')
@@ -604,6 +626,399 @@ def generate_podcast(pdf_file_path: str, progress_callback=None) -> Optional[str
         raise
 
 
+# ============================================================================
+# AUTHENTICATION UI FUNCTIONS
+# ============================================================================
+
+def init_auth_session_state():
+    """Initialize authentication-related session state."""
+    if 'auth_state' not in st.session_state:
+        st.session_state.auth_state = None  # None, 'awaiting_verification', 'awaiting_password', 'authenticated'
+    if 'user' not in st.session_state:
+        st.session_state.user = None
+    if 'auth_page' not in st.session_state:
+        st.session_state.auth_page = 'login'  # 'login', 'signup', 'forgot_password', 'create_password', 'reset_password'
+    if 'pending_user_id' not in st.session_state:
+        st.session_state.pending_user_id = None
+
+
+def is_authenticated() -> bool:
+    """Check if user is fully authenticated."""
+    return (
+        st.session_state.get('auth_state') == 'authenticated' and
+        st.session_state.get('user') is not None
+    )
+
+
+def logout():
+    """Clear session and logout user."""
+    st.session_state.auth_state = None
+    st.session_state.user = None
+    st.session_state.auth_page = 'login'
+    st.session_state.pending_user_id = None
+    st.rerun()
+
+
+def handle_email_verification():
+    """Process email verification from URL."""
+    query_params = st.query_params
+
+    if 'verify' in query_params:
+        token = query_params.get('verify')
+        token_data = get_verification_token(token)
+
+        if token_data:
+            # Valid token - verify email
+            verify_user_email(token_data.user_id)
+            consume_verification_token(token)
+
+            st.session_state.auth_page = 'create_password'
+            st.session_state.pending_user_id = token_data.user_id
+            st.session_state.auth_state = 'awaiting_password'
+            st.query_params.clear()
+            st.success("Email verified successfully! Please create your password.")
+        else:
+            st.error("Invalid or expired verification link. Please request a new one.")
+            st.query_params.clear()
+
+
+def handle_password_reset_link():
+    """Process password reset from URL."""
+    query_params = st.query_params
+
+    if 'reset' in query_params:
+        token = query_params.get('reset')
+        token_data = get_reset_token(token)
+
+        if token_data:
+            st.session_state.auth_page = 'reset_password'
+            st.session_state.pending_user_id = token_data.user_id
+            st.session_state.reset_token = token
+        else:
+            st.error("Invalid or expired reset link. Please request a new one.")
+            st.query_params.clear()
+
+
+def show_login_page():
+    """Display login form."""
+    st.header("Sign In")
+
+    # Email/password login
+    with st.form("login_form"):
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign In", use_container_width=True)
+
+        if submitted:
+            if email and password:
+                user = get_user_by_email(sanitize_email(email))
+
+                if user and user.password_hash:
+                    if SecurityManager.verify_password(password, user.password_hash):
+                        if user.is_email_verified:
+                            st.session_state.auth_state = 'authenticated'
+                            st.session_state.user = {
+                                'id': user.id,
+                                'email': user.email
+                            }
+                            update_last_login(user.id)
+                            st.rerun()
+                        else:
+                            st.error("Please verify your email first. Check your inbox.")
+                    else:
+                        st.error("Invalid email or password.")
+                else:
+                    st.error("Invalid email or password.")
+            else:
+                st.error("Please enter both email and password.")
+
+    # Navigation links
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Forgot Password?", use_container_width=True):
+            st.session_state.auth_page = 'forgot_password'
+            st.rerun()
+    with col2:
+        if st.button("Create Account", use_container_width=True):
+            st.session_state.auth_page = 'signup'
+            st.rerun()
+
+
+def show_signup_page():
+    """Display email-based signup form."""
+    st.header("Create Account")
+
+    st.info("Enter your email to create an account. We'll send you a verification link.")
+
+    with st.form("signup_form"):
+        email = st.text_input("Email Address")
+        submitted = st.form_submit_button("Sign Up", use_container_width=True)
+
+        if submitted:
+            if email:
+                email = sanitize_email(email)
+
+                # Check if user already exists
+                existing_user = get_user_by_email(email)
+
+                if existing_user:
+                    if existing_user.is_email_verified and existing_user.password_hash:
+                        st.error("An account with this email already exists. Please sign in.")
+                    elif existing_user.is_email_verified:
+                        # Email verified but no password - go to password creation
+                        st.session_state.auth_page = 'create_password'
+                        st.session_state.pending_user_id = existing_user.id
+                        st.rerun()
+                    else:
+                        # Resend verification email
+                        token = SecurityManager.generate_token()
+                        expires_at = SecurityManager.get_verification_token_expiry()
+                        create_verification_token(existing_user.id, token, expires_at)
+
+                        email_service = EmailService()
+                        verification_link = generate_verification_link(token)
+                        email_service.send_verification_email(email, verification_link)
+
+                        st.session_state.auth_state = 'awaiting_verification'
+                        st.session_state.pending_user_id = existing_user.id
+                        st.rerun()
+                else:
+                    # Create new user
+                    new_user = create_user(email)
+
+                    if new_user:
+                        # Generate verification token
+                        token = SecurityManager.generate_token()
+                        expires_at = SecurityManager.get_verification_token_expiry()
+                        create_verification_token(new_user.id, token, expires_at)
+
+                        # Send verification email
+                        email_service = EmailService()
+                        verification_link = generate_verification_link(token)
+                        email_service.send_verification_email(email, verification_link)
+
+                        # Send admin notification
+                        email_service.send_admin_notification(email)
+
+                        st.session_state.auth_state = 'awaiting_verification'
+                        st.session_state.pending_user_id = new_user.id
+                        st.rerun()
+                    else:
+                        st.error("Failed to create account. Please try again.")
+            else:
+                st.error("Please enter your email address.")
+
+    if st.button("Back to Sign In"):
+        st.session_state.auth_page = 'login'
+        st.rerun()
+
+
+def show_forgot_password_page():
+    """Display forgot password form."""
+    st.header("Reset Password")
+
+    with st.form("forgot_password_form"):
+        email = st.text_input("Enter your email address")
+        submitted = st.form_submit_button("Send Reset Link", use_container_width=True)
+
+        if submitted:
+            if email:
+                user = get_user_by_email(sanitize_email(email))
+
+                # Always show success to prevent email enumeration
+                st.success("If an account exists with this email, a password reset link has been sent.")
+
+                if user:
+                    token = SecurityManager.generate_token()
+                    expires_at = SecurityManager.get_reset_token_expiry()
+                    create_reset_token(user.id, token, expires_at)
+
+                    email_service = EmailService()
+                    reset_link = generate_reset_link(token)
+                    email_service.send_password_reset_email(email, reset_link)
+            else:
+                st.error("Please enter your email address.")
+
+    if st.button("Back to Sign In"):
+        st.session_state.auth_page = 'login'
+        st.rerun()
+
+
+def show_create_password_page():
+    """Display password creation form after email verification."""
+    st.header("Create Your Password")
+
+    user_id = st.session_state.get('pending_user_id')
+    if not user_id:
+        st.error("Session expired. Please sign up again.")
+        st.session_state.auth_page = 'signup'
+        st.rerun()
+        return
+
+    user = get_user_by_id(user_id)
+    if not user:
+        st.error("User not found. Please sign up again.")
+        st.session_state.auth_page = 'signup'
+        st.rerun()
+        return
+
+    st.info(f"Creating password for: {user.email}")
+
+    st.markdown("""
+    **Password requirements:**
+    - At least 8 characters
+    - At least one uppercase letter
+    - At least one lowercase letter
+    - At least one digit
+    - At least one special character
+    """)
+
+    with st.form("create_password_form"):
+        password = st.text_input("Password", type="password")
+        confirm_password = st.text_input("Confirm Password", type="password")
+        submitted = st.form_submit_button("Create Password", use_container_width=True)
+
+        if submitted:
+            if password and confirm_password:
+                if password != confirm_password:
+                    st.error("Passwords do not match.")
+                else:
+                    is_valid, message = SecurityManager.validate_password_strength(password)
+                    if not is_valid:
+                        st.error(message)
+                    else:
+                        password_hash = SecurityManager.hash_password(password)
+                        update_user_password(user_id, password_hash)
+
+                        st.session_state.auth_state = 'authenticated'
+                        st.session_state.user = {
+                            'id': user.id,
+                            'email': user.email
+                        }
+                        st.session_state.pending_user_id = None
+                        update_last_login(user.id)
+                        st.success("Password created successfully!")
+                        st.rerun()
+            else:
+                st.error("Please enter and confirm your password.")
+
+
+def show_reset_password_page():
+    """Display password reset form."""
+    st.header("Reset Your Password")
+
+    user_id = st.session_state.get('pending_user_id')
+    reset_token = st.session_state.get('reset_token')
+
+    if not user_id or not reset_token:
+        st.error("Invalid reset session. Please request a new password reset.")
+        st.session_state.auth_page = 'login'
+        st.rerun()
+        return
+
+    st.markdown("""
+    **Password requirements:**
+    - At least 8 characters
+    - At least one uppercase letter
+    - At least one lowercase letter
+    - At least one digit
+    - At least one special character
+    """)
+
+    with st.form("reset_password_form"):
+        password = st.text_input("New Password", type="password")
+        confirm_password = st.text_input("Confirm New Password", type="password")
+        submitted = st.form_submit_button("Reset Password", use_container_width=True)
+
+        if submitted:
+            if password and confirm_password:
+                if password != confirm_password:
+                    st.error("Passwords do not match.")
+                else:
+                    is_valid, message = SecurityManager.validate_password_strength(password)
+                    if not is_valid:
+                        st.error(message)
+                    else:
+                        password_hash = SecurityManager.hash_password(password)
+                        update_user_password(user_id, password_hash)
+                        consume_reset_token(reset_token)
+
+                        st.session_state.pending_user_id = None
+                        st.session_state.reset_token = None
+                        st.session_state.auth_page = 'login'
+                        st.query_params.clear()
+                        st.success("Password reset successfully! Please sign in.")
+                        st.rerun()
+            else:
+                st.error("Please enter and confirm your new password.")
+
+
+def show_awaiting_verification_page():
+    """Display message when awaiting email verification."""
+    st.header("Verify Your Email")
+
+    user_id = st.session_state.get('pending_user_id')
+    if user_id:
+        user = get_user_by_id(user_id)
+        if user:
+            st.info(f"A verification email has been sent to **{user.email}**")
+
+    st.markdown("""
+    Please check your inbox and click the verification link to continue.
+
+    **Didn't receive the email?**
+    - Check your spam folder
+    - Make sure you entered the correct email address
+    """)
+
+    if st.button("Resend Verification Email"):
+        if user_id:
+            user = get_user_by_id(user_id)
+            if user:
+                token = SecurityManager.generate_token()
+                expires_at = SecurityManager.get_verification_token_expiry()
+                create_verification_token(user.id, token, expires_at)
+
+                email_service = EmailService()
+                verification_link = generate_verification_link(token)
+                email_service.send_verification_email(user.email, verification_link)
+                st.success("Verification email sent!")
+
+    if st.button("Back to Sign In"):
+        st.session_state.auth_state = None
+        st.session_state.auth_page = 'login'
+        st.session_state.pending_user_id = None
+        st.rerun()
+
+
+def show_auth_ui():
+    """Display authentication interface."""
+    st.title("AI Podcast Generator")
+    st.markdown("Convert research papers into engaging podcast conversations.")
+
+    # Check if awaiting verification
+    if st.session_state.get('auth_state') == 'awaiting_verification':
+        show_awaiting_verification_page()
+        return
+
+    auth_page = st.session_state.get('auth_page', 'login')
+
+    if auth_page == 'login':
+        show_login_page()
+    elif auth_page == 'signup':
+        show_signup_page()
+    elif auth_page == 'forgot_password':
+        show_forgot_password_page()
+    elif auth_page == 'create_password':
+        show_create_password_page()
+    elif auth_page == 'reset_password':
+        show_reset_password_page()
+
+
+# ============================================================================
+# STREAMLIT UI
+# ============================================================================
+
 # Streamlit UI
 def main():
     """Main Streamlit application."""
@@ -612,19 +1027,49 @@ def main():
         page_icon="🎙️",
         layout="wide"
     )
-    
-    st.title("🎙️ AI Agents Podcast Generator")
-    st.markdown("Convert research papers into engaging podcast conversations using Google ADK multi-agent system.")
-    
-    # Initialize session state
+
+    # Initialize database
+    init_database()
+
+    # Initialize authentication session state
+    init_auth_session_state()
+
+    # Initialize app session state
     if 'podcast_path' not in st.session_state:
         st.session_state.podcast_path = None
     if 'status' not in st.session_state:
         st.session_state.status = None
     if 'google_api_key' not in st.session_state:
         st.session_state.google_api_key = None
-    
+
+    # Handle URL query parameters for authentication
+    query_params = st.query_params
+
+    # Handle email verification
+    if 'verify' in query_params:
+        handle_email_verification()
+
+    # Handle password reset
+    if 'reset' in query_params:
+        handle_password_reset_link()
+
+    # Check authentication - show auth UI if not authenticated
+    if not is_authenticated():
+        show_auth_ui()
+        st.stop()
+
+    # User is authenticated - show main app
+    st.title("🎙️ AI Agents Podcast Generator")
+    st.markdown("Convert research papers into engaging podcast conversations using Google ADK multi-agent system.")
+
     # API Key Input Section (at the top, before everything else)
+    st.sidebar.header("👤 Account")
+    user = st.session_state.get('user', {})
+    st.sidebar.markdown(f"**{user.get('email', 'Unknown')}**")
+    if st.sidebar.button("Logout", use_container_width=True):
+        logout()
+    st.sidebar.divider()
+
     st.sidebar.header("🔑 API Configuration")
     st.sidebar.markdown("**Required**: Enter your Google API Key to use the application.")
     

@@ -1,0 +1,41 @@
+# App Engine configuration (alternative deployment option)
+runtime: python312
+
+# Use custom runtime with Dockerfile
+runtime_config:
+  operating_system: ubuntu22
+
+# Resources
+resources:
+  cpu: 2
+  memory_gb: 2
+  disk_size_gb: 10
+
+# Environment variables (set these in App Engine settings or via gcloud)
+env_variables:
+  STREAMLIT_SERVER_PORT: '8501'
+  STREAMLIT_SERVER_ADDRESS: '0.0.0.0'
+  STREAMLIT_SERVER_HEADLESS: 'true'
+  STREAMLIT_BROWSER_GATHER_USAGE_STATS: 'false'
+
+# Health check
+readiness_check:
+  path: '/_stcore/health'
+  check_interval_sec: 5
+  timeout_sec: 4
+  failure_threshold: 2
+  success_threshold: 2
+
+liveness_check:
+  path: '/_stcore/health'
+  check_interval_sec: 30
+  timeout_sec: 4
+  failure_threshold: 2
+  success_threshold: 2
+
+# Automatic scaling
+automatic_scaling:
+  min_instances: 0
+  max_instances: 10
+  target_cpu_utilization: 0.6
+

@@ -1,0 +1,58 @@
+# Cloud Build configuration for Google Cloud Platform
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/podcast-generator:$SHORT_SHA', '-t', 'gcr.io/$PROJECT_ID/podcast-generator:latest', '.']
+    
+  # Push the Docker image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/podcast-generator:$SHORT_SHA']
+    
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/podcast-generator:latest']
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'podcast-generator'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/podcast-generator:$SHORT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '8501'
+      - '--memory'
+      - '2Gi'
+      - '--cpu'
+      - '2'
+      - '--timeout'
+      - '3600'
+      - '--max-instances'
+      - '10'
+      - '--set-env-vars'
+      - 'GOOGLE_API_KEY=${_GOOGLE_API_KEY},SARAH_VOICE_NAME=${_SARAH_VOICE_NAME},DENNIS_VOICE_NAME=${_DENNIS_VOICE_NAME}'
+
+# Substitutions for secrets (set these in Cloud Build triggers)
+substitutions:
+  _GOOGLE_API_KEY: ''
+  _SARAH_VOICE_NAME: 'Puck'
+  _DENNIS_VOICE_NAME: 'Kore'
+
+# Images to be pushed to the registry
+images:
+  - 'gcr.io/$PROJECT_ID/podcast-generator:$SHORT_SHA'
+  - 'gcr.io/$PROJECT_ID/podcast-generator:latest'
+
+# Build options
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: '3600s'
+

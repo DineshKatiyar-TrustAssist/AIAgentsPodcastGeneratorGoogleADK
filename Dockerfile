@@ -6,7 +6,7 @@ WORKDIR /app
 
 # Set environment variables
 # Note: GOOGLE_API_KEY is NOT set here - users must enter it in the Streamlit UI
-# The application requires users to provide their API key via the web interface
+# Gmail SMTP credentials should be set via environment variables at runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     STREAMLIT_SERVER_PORT=8501 \
@@ -28,9 +28,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy application code
 COPY app.py tools.py ./
+COPY auth/ ./auth/
 
 # Create necessary directories
-RUN mkdir -p uploads outputs
+RUN mkdir -p uploads outputs data
 
 # Expose Streamlit port
 EXPOSE 8501
